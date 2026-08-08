@@ -6,18 +6,17 @@ Adapted from the pattern used in noworneverev/aachen-termin-bot's
 termin.py -> abholung_termin(). Same multi-step booking-flow simulation,
 pointed at a different "Anliegen" (concern) that the original bot doesn't watch.
 
-Flow:
-  1. GET the "Auswahl des Anliegens" page, find the cnc-id for our Anliegen
-  2. GET the location page for that cnc-id, read the hidden `loc` value
-  3. POST the location confirmation (this is the step that needs verifying,
-     see SELECT_LOCATION_TEXT below)
-  4. GET the suggestion page and parse whether slots exist
+Sends one separate Telegram message per available (date, time) slot that
+falls inside your configured date window, and only re-notifies about a slot
+if it disappears and later comes back (e.g. someone books it, then cancels).
 """
 
 import hashlib
 import json
 import logging
 import os
+import re
+from datetime import date
 from pathlib import Path
 
 import bs4
@@ -37,37 +36,43 @@ STEP1_URL = "https://termine.staedteregion-aachen.de/auslaenderamt/select2?md=1"
 SUGGEST_URL = "https://termine.staedteregion-aachen.de/auslaenderamt/suggest"
 LOCATION_URL_BASE = "https://termine.staedteregion-aachen.de/auslaenderamt/location?mdt=89&select_cnc=1"
 
-# --- CONFIG you should verify once before relying on this -------------------
-#
-# Order of items under the "Abholung" heading on the site (0-indexed), as of
-# writing:
-#   0 = Abholung Aufenthaltserlaubnis        (already covered by the original bot)
-#   1 = Abholung Reiseausweis
-#   2 = Aushändigung Einbürgerungsurkunde    <-- this is the one we want
-#   3 = Abholung Verpflichtungserklärung/Einladung (vorheriger Onlineantrag)
-#
-# If the site reorders this section, this index will silently point at the
-# wrong Anliegen, so worth a periodic sanity check.
-ANLIEGEN_SECTION = "Abholung"
-ANLIEGEN_POSITION = 2
+# ============================= CONFIG — edit these yourself ==================
 
-# The site expects a human-readable "select_location" string alongside the
-# hidden `loc` id when you confirm the pickup location. The existing bot's
-# values (e.g. "Ausländeramt Aachen - Aachen Arkaden, Trierer Straße 1, Aachen
-# auswählen") were almost certainly captured by watching the real POST
-# request in browser DevTools (Network tab) while manually clicking through
-# the booking flow for that specific Anliegen. Do that once for
-# Einbürgerungsurkunde: go to the site, pick "Aushändigung
-# Einbürgerungsurkunde", get to the "choose location" step, open DevTools ->
-# Network, click the location option, and find the POST request to a `/location...`
-# URL. Copy the exact `select_location` form field value from that request
-# into the line below. Left as the Aachen Arkaden value as a starting guess
-# since it's the address currently listed for most "Abholung" pickups — but
-# confirm it, don't trust it.
+ANLIEGEN_SECTION = "Abholung"
+ANLIEGEN_POSITION = 2  # Aushändigung Einbürgerungsurkunde
+
 SELECT_LOCATION_TEXT = "Ausländeramt Aachen - Aachen Arkaden, Trierer Straße 1, Aachen auswählen"
 
+# Only notify about appointments inside this date window (both dates included).
+# Format is date(YEAR, MONTH, DAY). Example: to only hear about appointments
+# between today and 20th August 2026:
+#   TARGET_WINDOW_START = date(2026, 8, 8)
+#   TARGET_WINDOW_END   = date(2026, 8, 20)
+TARGET_WINDOW_START = date(2026, 1, 1)     # <-- EDIT ME
+TARGET_WINDOW_END = date(2026, 12, 31)     # <-- EDIT ME
+
+# If the automatic time-slot detection below ever seems wrong (reports a time
+# that's actually greyed-out on the real site, or misses one that IS bookable),
+# set this to True, re-run the workflow once manually, then copy the whole
+# printed HTML block from the Actions log and send it to me — I'll correct the
+# parsing logic precisely from that instead of guessing.
+DEBUG_DUMP_HTML = False
+
 STATE_FILE = Path(__file__).parent / "state.json"
-# -----------------------------------------------------------------------------
+
+# ===============================================================================
+
+DATE_PATTERN = re.compile(r"(\d{2})\.(\d{2})\.(\d{4})")
+TIME_PATTERN = re.compile(r"^\d{1,2}:\d{2}$")
+
+
+def parse_date_label(label: str):
+    """Extract a date object from a label like 'Dienstag, 08.09.2026'."""
+    match = DATE_PATTERN.search(label)
+    if not match:
+        return None
+    day, month, year = match.groups()
+    return date(int(year), int(month), int(day))
 
 
 def find_cnc_url(soup: bs4.BeautifulSoup, section_heading: str, position: int):
@@ -92,8 +97,50 @@ def find_cnc_url(soup: bs4.BeautifulSoup, section_heading: str, position: int):
     return True, f"{LOCATION_URL_BASE}&cnc-{cnc_id}=1"
 
 
+def extract_times_for_date_block(content) -> list:
+    """
+    Given the HTML block that follows a date heading in the suggestion
+    accordion, return the list of bookable (non-greyed-out) time strings
+    found in it, e.g. ["13:40", "14:40"].
+
+    Best-effort heuristic: treats a time as available if its element isn't
+    marked disabled/inactive/muted and is a real clickable link/button.
+    See DEBUG_DUMP_HTML above if this needs correcting.
+    """
+    available = []
+    if content is None:
+        return available
+
+    for text_node in content.find_all(string=TIME_PATTERN):
+        time_text = text_node.strip()
+        el = text_node.parent
+
+        classes = " ".join(el.get("class", [])).lower()
+        is_disabled = (
+            el.has_attr("disabled")
+            or "disabled" in classes
+            or "inactive" in classes
+            or "unavailable" in classes
+            or "muted" in classes
+            or "not-available" in classes
+        )
+
+        href = el.get("href", "")
+        is_real_link = el.name == "a" and href and href not in ("#", "javascript:void(0)", "")
+        is_clickable_tag = el.name in ("a", "button")
+
+        if not is_disabled and (is_real_link or is_clickable_tag):
+            available.append(time_text)
+
+    return available
+
+
 def check_einbuergerungsurkunde():
-    """Check for available 'Aushändigung Einbürgerungsurkunde' pickup appointments."""
+    """
+    Check for available 'Aushändigung Einbürgerungsurkunde' pickup slots.
+    Returns a list of dicts: [{"date_label": ..., "date_iso": ..., "time": ... or None}, ...]
+    already filtered to TARGET_WINDOW_START..TARGET_WINDOW_END.
+    """
     session = requests.Session()
     session.headers.update({"User-Agent": USER_AGENT})
 
@@ -103,7 +150,7 @@ def check_einbuergerungsurkunde():
     success, url_2_or_error = find_cnc_url(soup, ANLIEGEN_SECTION, ANLIEGEN_POSITION)
     if not success:
         logging.error(url_2_or_error)
-        return False, url_2_or_error
+        return []
 
     url_2 = url_2_or_error
     res2 = session.get(url_2)
@@ -111,7 +158,8 @@ def check_einbuergerungsurkunde():
 
     loc_input = soup.find("input", {"name": "loc"})
     if not loc_input:
-        return False, "Could not find the location id field — site structure may have changed."
+        logging.error("Could not find the location id field — site structure may have changed.")
+        return []
     loc = loc_input.get("value")
     logging.info(f"Einbürgerungsurkunde loc id: {loc}")
 
@@ -124,28 +172,78 @@ def check_einbuergerungsurkunde():
     session.post(url_2, data=payload)
     res4 = session.get(SUGGEST_URL)
 
+    if DEBUG_DUMP_HTML:
+        logging.info("----- DEBUG: raw suggestion page HTML below -----")
+        logging.info(res4.text)
+        logging.info("----- DEBUG: end of raw HTML -----")
+
     if "Kein freier Termin verfügbar" in res4.text:
-        msg = "No appointment currently available for Einbürgerungsurkunde pickup."
-        logging.info(msg)
-        return False, msg
+        logging.info("No appointment currently available for Einbürgerungsurkunde pickup.")
+        return []
 
     soup = bs4.BeautifulSoup(res4.text, "html.parser")
     div = soup.find("div", {"id": "sugg_accordion"})
     summary_tag = soup.find("summary", id="suggest_details_summary")
 
+    slots = []
+
     if div:
-        dates = [h.text for h in div.find_all("h3")]
-        message = "New Einbürgerungsurkunde pickup appointments available:\n" + "\n".join(dates)
-        logging.info(message)
-        return True, message
+        for h3 in div.find_all("h3"):
+            date_label = h3.get_text(strip=True)
+            date_iso = parse_date_label(date_label)
+            if date_iso is None:
+                continue
+            content = h3.find_next_sibling()
+            times = extract_times_for_date_block(content)
+            if times:
+                for t in times:
+                    slots.append({"date_label": date_label, "date_iso": date_iso, "time": t})
+            else:
+                # Couldn't confidently detect individual times — still report the
+                # date so you don't miss it, just without a specific time attached.
+                slots.append({"date_label": date_label, "date_iso": date_iso, "time": None})
     elif summary_tag:
-        message = "Einbürgerungsurkunde pickup appointment available now:\n" + summary_tag.get_text(strip=True)
-        logging.info(message)
-        return True, message
+        text = summary_tag.get_text(strip=True)
+        date_iso = parse_date_label(text)
+        time_match = re.search(r"\d{1,2}:\d{2}", text)
+        slots.append({
+            "date_label": text,
+            "date_iso": date_iso if date_iso else date.today(),
+            "time": time_match.group() if time_match else None,
+        })
     else:
-        message = "Slots may be available, but the page structure wasn't recognized — check manually."
-        logging.warning(message)
-        return False, message
+        logging.warning("Slots may be available, but the page structure wasn't recognized — check manually.")
+        return []
+
+    filtered = [
+        s for s in slots
+        if s["date_iso"] is not None and TARGET_WINDOW_START <= s["date_iso"] <= TARGET_WINDOW_END
+    ]
+
+    if not filtered:
+        logging.info(
+            f"Appointments exist but none fall within your window "
+            f"({TARGET_WINDOW_START} to {TARGET_WINDOW_END})."
+        )
+    return filtered
+
+
+def slot_key(slot: dict) -> str:
+    return f"{slot['date_iso'].isoformat()}|{slot['time'] or 'unspecified'}"
+
+
+def format_slot_message(slot: dict) -> str:
+    if slot["time"]:
+        return (
+            f"New Einbürgerungsurkunde pickup slot available:\n"
+            f"{slot['date_label']} at {slot['time']}\n\n"
+            f"Book here: {STEP1_URL}"
+        )
+    return (
+        f"New Einbürgerungsurkunde pickup date available (exact time not detected):\n"
+        f"{slot['date_label']}\n\n"
+        f"Book here: {STEP1_URL}"
+    )
 
 
 def send_telegram_message(text: str) -> bool:
@@ -174,27 +272,35 @@ def save_state(state: dict):
 
 
 def main():
-    available, message = check_einbuergerungsurkunde()
-    print(message)
+    slots = check_einbuergerungsurkunde()
 
-    if not available:
+    if not slots:
+        print("No matching appointments right now.")
         return
 
-    # Dedup: only notify if the message content actually changed since last run,
-    # so we don't spam the same "slots available" alert every cron cycle.
     state = load_state()
-    message_hash = hashlib.sha256(message.encode("utf-8")).hexdigest()
+    already_notified = set(state.get("notified_slots", []))
+    current_keys = {slot_key(s): s for s in slots}
 
-    if state.get("last_message_hash") == message_hash:
-        logging.info("Same availability as last check — not re-notifying.")
-        return
+    newly_sent = set()
+    for key, slot in current_keys.items():
+        if key in already_notified:
+            continue
+        message = format_slot_message(slot)
+        print(message)
+        if send_telegram_message(message):
+            newly_sent.add(key)
+        else:
+            logging.warning(f"Failed to notify for {key} — will retry next run.")
 
-    sent = send_telegram_message(message)
-    if sent:
-        state["last_message_hash"] = message_hash
-        save_state(state)
-    else:
-        logging.warning("Notification not sent — will retry next run instead of marking as notified.")
+    # Keep only keys still currently available (whether previously notified or
+    # just sent now) — anything that vanished gets dropped, so if it reappears
+    # later you'll be notified about it again.
+    state["notified_slots"] = list((already_notified & set(current_keys.keys())) | newly_sent)
+    save_state(state)
+
+    if not newly_sent:
+        print("No new slots since last check — not re-notifying.")
 
 
 if __name__ == "__main__":
