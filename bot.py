@@ -49,7 +49,7 @@ SELECT_LOCATION_TEXT = "Ausländeramt Aachen - Aachen Arkaden, Trierer Straße 1
 #   TARGET_WINDOW_START = date(2026, 8, 8)
 #   TARGET_WINDOW_END   = date(2026, 8, 20)
 TARGET_WINDOW_START = date(2026, 8, 8)     # yyyy,mm,dd <-- EDIT ME
-TARGET_WINDOW_END = date(2026, 9, 9)     # yyyy,mm,dd <-- EDIT ME
+TARGET_WINDOW_END = date(2026, 9, 10)     # yyyy,mm,dd <-- EDIT ME
 
 # If the automatic time-slot detection below ever seems wrong (reports a time
 # that's actually greyed-out on the real site, or misses one that IS bookable),
