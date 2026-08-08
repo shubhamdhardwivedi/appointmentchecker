@@ -148,18 +148,19 @@ def check_einbuergerungsurkunde():
         return False, message
 
 
-def send_telegram_message(text: str):
+def send_telegram_message(text: str) -> bool:
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
         logging.error("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set — skipping notification.")
-        return
+        return False
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     resp = requests.post(url, data={"chat_id": chat_id, "text": text})
     if resp.status_code != 200:
         logging.error(f"Telegram send failed: {resp.status_code} {resp.text}")
-    else:
-        logging.info("Telegram notification sent.")
+        return False
+    logging.info("Telegram notification sent.")
+    return True
 
 
 def load_state() -> dict:
@@ -188,9 +189,12 @@ def main():
         logging.info("Same availability as last check — not re-notifying.")
         return
 
-    send_telegram_message(message)
-    state["last_message_hash"] = message_hash
-    save_state(state)
+    sent = send_telegram_message(message)
+    if sent:
+        state["last_message_hash"] = message_hash
+        save_state(state)
+    else:
+        logging.warning("Notification not sent — will retry next run instead of marking as notified.")
 
 
 if __name__ == "__main__":
