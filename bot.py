@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import date
 from pathlib import Path
 
@@ -43,13 +44,20 @@ ANLIEGEN_POSITION = 2  # Aushändigung Einbürgerungsurkunde
 
 SELECT_LOCATION_TEXT = "Ausländeramt Aachen - Aachen Arkaden, Trierer Straße 1, Aachen auswählen"
 
+
+def ddmmyyyy(day: int, month: int, year: int) -> date:
+    """Lets you write dates as day, month, year below instead of Python's
+    usual year-first order."""
+    return date(year, month, day)
+
+
 # Only notify about appointments inside this date window (both dates included).
-# Format is date(YEAR, MONTH, DAY). Example: to only hear about appointments
-# between today and 20th August 2026:
-#   TARGET_WINDOW_START = date(2026, 8, 8)
-#   TARGET_WINDOW_END   = date(2026, 8, 20)
-TARGET_WINDOW_START = date(2026, 8, 8)     # yyyy,mm,dd <-- EDIT ME
-TARGET_WINDOW_END = date(2026, 9, 15)     # yyyy,mm,dd <-- EDIT ME
+# Format is ddmmyyyy(DAY, MONTH, YEAR). Example: to only hear about
+# appointments between 8th August 2026 and 15th September 2026:
+#   TARGET_WINDOW_START = ddmmyyyy(8, 8, 2026)
+#   TARGET_WINDOW_END   = ddmmyyyy(15, 9, 2026)
+TARGET_WINDOW_START = ddmmyyyy(8, 8, 2026)    # <-- EDIT ME (day, month, year)
+TARGET_WINDOW_END = ddmmyyyy(15, 9, 2026)     # <-- EDIT ME (day, month, year)
 
 # If the automatic time-slot detection below ever seems wrong (reports a time
 # that's actually greyed-out on the real site, or misses one that IS bookable),
@@ -290,6 +298,7 @@ def main():
         print(message)
         if send_telegram_message(message):
             newly_sent.add(key)
+            time.sleep(3)  # gap between messages so your phone doesn't batch them into one alert
         else:
             logging.warning(f"Failed to notify for {key} — will retry next run.")
 
