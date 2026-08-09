@@ -57,7 +57,7 @@ def ddmmyyyy(day: int, month: int, year: int) -> date:
 #   TARGET_WINDOW_START = ddmmyyyy(8, 8, 2026)
 #   TARGET_WINDOW_END   = ddmmyyyy(15, 9, 2026)
 TARGET_WINDOW_START = ddmmyyyy(8, 8, 2026)    # <-- EDIT ME (day, month, year)
-TARGET_WINDOW_END = ddmmyyyy(8, 9, 2026)     # <-- EDIT ME (day, month, year)
+TARGET_WINDOW_END = ddmmyyyy(15, 9, 2026)     # <-- EDIT ME (day, month, year)
 
 # If the automatic time-slot detection below ever seems wrong (reports a time
 # that's actually greyed-out on the real site, or misses one that IS bookable),
@@ -254,19 +254,28 @@ def format_slot_message(slot: dict) -> str:
     )
 
 
+def get_chat_ids() -> list:
+    raw = os.environ.get("TELEGRAM_CHAT_ID", "")
+    return [c.strip() for c in raw.split(",") if c.strip()]
+
+
 def send_telegram_message(text: str) -> bool:
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-    if not token or not chat_id:
+    chat_ids = get_chat_ids()
+    if not token or not chat_ids:
         logging.error("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set — skipping notification.")
         return False
+
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    resp = requests.post(url, data={"chat_id": chat_id, "text": text})
-    if resp.status_code != 200:
-        logging.error(f"Telegram send failed: {resp.status_code} {resp.text}")
-        return False
-    logging.info("Telegram notification sent.")
-    return True
+    all_ok = True
+    for chat_id in chat_ids:
+        resp = requests.post(url, data={"chat_id": chat_id, "text": text})
+        if resp.status_code != 200:
+            logging.error(f"Telegram send to {chat_id} failed: {resp.status_code} {resp.text}")
+            all_ok = False
+        else:
+            logging.info(f"Telegram notification sent to {chat_id}.")
+    return all_ok
 
 
 def load_state() -> dict:
