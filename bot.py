@@ -57,7 +57,7 @@ def ddmmyyyy(day: int, month: int, year: int) -> date:
 #   TARGET_WINDOW_START = ddmmyyyy(8, 8, 2026)
 #   TARGET_WINDOW_END   = ddmmyyyy(15, 9, 2026)
 TARGET_WINDOW_START = ddmmyyyy(8, 8, 2026)    # <-- EDIT ME (day, month, year)
-TARGET_WINDOW_END = ddmmyyyy(9, 8, 2026)     # <-- EDIT ME (day, month, year)
+TARGET_WINDOW_END = ddmmyyyy(9, 9, 2026)     # <-- EDIT ME (day, month, year)
 
 # If the automatic time-slot detection below ever seems wrong (reports a time
 # that's actually greyed-out on the real site, or misses one that IS bookable),
