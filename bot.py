@@ -1,10 +1,7 @@
 """
 Aachen Ausländeramt appointment watcher for:
-"Aushändigung Einbürgerungsurkunde" (naturalization certificate collection)
-
-Adapted from the pattern used in noworneverev/aachen-termin-bot's
-termin.py -> abholung_termin(). Same multi-step booking-flow simulation,
-pointed at a different "Anliegen" (concern) that the original bot doesn't watch.
+"Beratungs- und Antragsservice" under the "Infostelle" section
+(general advisory / application service).
 
 Sends one separate Telegram message per available (date, time) slot that
 falls inside your configured date window, and only re-notifies about a slot
@@ -39,10 +36,13 @@ LOCATION_URL_BASE = "https://termine.staedteregion-aachen.de/auslaenderamt/locat
 
 # ============================= CONFIG — edit these yourself ==================
 
-ANLIEGEN_SECTION = "Abholung"
-ANLIEGEN_POSITION = 2  # Aushändigung Einbürgerungsurkunde
+ANLIEGEN_SECTION = "Infostelle"
+ANLIEGEN_POSITION = 0  # Beratungs- und Antragsservice
 
+# GUESS — not yet verified against a real session. Test once, and if the log
+# looks wrong, flip DEBUG_DUMP_HTML on below and send me the output.
 SELECT_LOCATION_TEXT = "Ausländeramt Aachen - Aachen Arkaden, Trierer Straße 1, Aachen auswählen"
+LOCATION_NAME_FOR_MESSAGE = "Ausländeramt Aachen - Aachen Arkaden, Trierer Straße 1, Aachen"
 
 
 def ddmmyyyy(day: int, month: int, year: int) -> date:
@@ -57,7 +57,7 @@ def ddmmyyyy(day: int, month: int, year: int) -> date:
 #   TARGET_WINDOW_START = ddmmyyyy(8, 8, 2026)
 #   TARGET_WINDOW_END   = ddmmyyyy(15, 9, 2026)
 TARGET_WINDOW_START = ddmmyyyy(8, 8, 2026)    # <-- EDIT ME (day, month, year)
-TARGET_WINDOW_END = ddmmyyyy(1, 9, 2026)     # <-- EDIT ME (day, month, year)
+TARGET_WINDOW_END = ddmmyyyy(01, 9, 2026)     # <-- EDIT ME (day, month, year)
 
 # If the automatic time-slot detection below ever seems wrong (reports a time
 # that's actually greyed-out on the real site, or misses one that IS bookable),
@@ -243,13 +243,15 @@ def slot_key(slot: dict) -> str:
 def format_slot_message(slot: dict) -> str:
     if slot["time"]:
         return (
-            f"New Einbürgerungsurkunde pickup slot available:\n"
-            f"{slot['date_label']} at {slot['time']}\n\n"
+            f"New Beratungs- und Antragsservice slot available:\n"
+            f"{slot['date_label']} at {slot['time']}\n"
+            f"Location: {LOCATION_NAME_FOR_MESSAGE}\n\n"
             f"Book here: {STEP1_URL}"
         )
     return (
-        f"New Einbürgerungsurkunde pickup date available (exact time not detected):\n"
-        f"{slot['date_label']}\n\n"
+        f"New Beratungs- und Antragsservice date available (exact time not detected):\n"
+        f"{slot['date_label']}\n"
+        f"Location: {LOCATION_NAME_FOR_MESSAGE}\n\n"
         f"Book here: {STEP1_URL}"
     )
 
